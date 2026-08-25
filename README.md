@@ -1,32 +1,50 @@
-# Immersive Vibration Response
+# 沉浸式震动反馈 Skill
 
-`immersive-vibration-response` is a Codex skill for low-power player haptic feedback in interactive games, embodied-agent games, simulations, and live narratives. In this project, the participant is always called the **player**, whether that participant is a person or an embodied agent.
+这是一个面向互动游戏、具身智能互动、模拟、角色扮演和长任务协作的 Codex skill。它把低功率震动设备接入 AI 的互动流程，让 AI 不必等待明确指令，也能依据剧情、事件、进度和氛围主动为**玩家**触发震动反馈。
 
-This project pursues immersion. Once the skill is installed and the bridge is available, an AI agent is instructed to trigger vibration proactively from game state and narrative events. It does not need to wait for the player to request a vibration. Agents can send a `HIT` and immediately continue their conversation or other tasks while the bridge delivers it in the background.
+这里统一使用“玩家”称呼互动对象。玩家可以是人，也可以是具身智能互动游戏中的参与智能体。
 
-Install this project only if autonomous, event-driven haptic feedback matches the experience you want to build. The agent still follows its host platform's permissions and policies, and a player can request an immediate stop at any time.
+本项目追求的是沉浸感与惊喜奖励感。安装 skill 并启动本地通信桥后，AI 可以在对话或执行其他任务的过程中发送异步 `HIT`，随后立即继续工作，不必等待震动结束。请只在希望获得这种主动、事件驱动的触觉互动体验时使用本项目。
 
-## Hardware And Software
+## 工作原理
 
-Prepare the following:
+```mermaid
+flowchart LR
+    P[玩家的互动、游戏状态或任务进度] --> A[AI Agent]
+    A --> S[沉浸式震动反馈 Skill]
+    S --> C[命令客户端]
+    C -->|本地 TCP 文本命令| B[异步通信桥]
+    B -->|USB 串口| E[ESP32-S3 固件]
+    E -->|BLE| D[低功率震动设备]
+    E --> F[保持约 7 秒后自动渐弱至 0]
+    A -->|发送 HIT 后继续对话和任务| N[后续互动]
+```
 
-- A host computer that runs Codex and the local bridge.
-- An ESP32-S3 with firmware compatible with the command protocol in [protocol.md](.agents/skills/immersive-vibration-response/references/protocol.md).
-- A USB data cable between the host and ESP32-S3.
-- The compatible low-power vibration massage device paired with the ESP32 firmware. The supplied firmware searches for BLE device name `GK36` and uses service `0x1000` and write characteristic `0x1001`.
-- Python 3.10 or newer and permission to access the USB serial port.
+通信桥默认只监听本机 `127.0.0.1:25363`。普通 `HIT` 进入后台串口队列后会立即返回 `QUEUED`，因此 AI 可以一边推进对话、编程或游戏，一边让震动在后台发生。
 
-The skill is designed for the low-power device and firmware described here. Do not direct this bridge protocol at an unknown device or higher-power equipment.
+## 准备事项
 
-## Install
+- 一台运行 Codex 和通信桥的电脑。
+- 一块已刷入兼容固件的 ESP32-S3。
+- 一根可传输数据的 USB 线，用于连接电脑和 ESP32-S3。
+- 与该 ESP32 固件配套的低功率震动按摩设备。
+- Python 3.10 或更高版本。
 
-Clone or place this repository in the project that will use the skill. Codex discovers the repository skill at:
+当前配套固件会寻找名称为 `GK36` 的 BLE 设备，并使用服务 `0x1000` 与写特征 `0x1001`。请确认设备已供电、可被发现并处于 ESP32 的蓝牙范围内。
+
+该项目只适用于这里描述的低功率设备与协议。不要将通信桥命令用于未知设备或高功率设备。
+
+## 安装与启动
+
+将本仓库放入需要使用 skill 的项目中。Codex 会从下列路径发现它：
 
 ```text
 .agents/skills/immersive-vibration-response/
 ```
 
-The Python bridge and client support Debian, Ubuntu, and Windows. Create a Python environment and install the bridge dependency:
+### Debian / Ubuntu
+
+创建虚拟环境并安装串口依赖：
 
 ```bash
 python3 -m venv .venv
@@ -34,101 +52,105 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-On Windows PowerShell, activate it with:
-
-```powershell
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-```
-
-On Debian or Ubuntu, the serial permission command below is normally the only platform-specific setup required.
-
-Connect the ESP32 and identify its serial port. Typical values are `/dev/ttyACM0` or `/dev/ttyUSB0` on Linux, and `COM3` on Windows. On Linux, grant the signed-in account serial access if required:
+连接 ESP32 后，常见串口名为 `/dev/ttyACM0` 或 `/dev/ttyUSB0`。如遇权限问题，将当前账号加入串口用户组，然后重新登录：
 
 ```bash
 sudo usermod -a -G dialout "$USER"
 ```
 
-Sign out and back in after changing the group.
-
-Start the bridge in a dedicated terminal. It listens only on `127.0.0.1:25363` by default:
+启动通信桥：
 
 ```bash
 python3 .agents/skills/immersive-vibration-response/scripts/esp32_bridge.py \
   --serial-port /dev/ttyACM0
 ```
 
-Windows example:
+### Windows
+
+在 PowerShell 中创建并激活虚拟环境：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+在设备管理器中确认 ESP32 对应的串口号，例如 `COM3`，然后启动通信桥：
 
 ```powershell
 python .agents/skills/immersive-vibration-response/scripts/esp32_bridge.py --serial-port COM3
 ```
 
-Verify the path in a second terminal:
+### 检查连接
+
+在另一个终端运行：
 
 ```bash
 python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py ping
 python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py status
 ```
 
-Expected responses include `PONG` and a `STATUS ...` line. If the skill does not appear in Codex after creating or updating it, restart Codex.
+预期会看到 `PONG` 和以 `STATUS` 开头的状态行。首次添加或修改 skill 后，如果 Codex 没有显示它，请重启 Codex。
 
-## Autonomous Haptic Behavior
+## 主动触发与俏皮互动
 
-The skill treats haptics as part of the player's game world. It can initiate feedback for impacts, near misses, action success, discoveries, environmental shifts, rising tension, and other meaningful moments without asking the player first.
+skill 会把震动作为玩家体验的一部分。AI 的互动风格应当俏皮、可爱而有生命力：在合适的节点让玩家感到被欢迎、被陪伴、取得进展或值得庆祝，而不是只输出干巴巴的状态文本。
 
-The agent's intended style is playful, cute, and lively. Haptics can turn an ordinary interaction into a small shared event: a first hello can leave a tactile impression, a completed subtask can feel like a reward, and a finished project can be celebrated rather than merely reported.
+以下是可跨游戏和普通任务复用的主动触发示例：
 
-### Example Trigger Scenes
-
-| Scene | Example haptic action | Experience goal |
+| 场景 | 建议动作 | 体验目的 |
 | --- | --- | --- |
-| First meeting, task launch, or first ready bridge | `hit 1` | Establish a friendly first tactile impression. |
-| Meaningful task milestone or a new subtask | `hit 1` or `hit 2` | Let the player feel progress rather than only read it. |
-| A subtask completes or an in-game action succeeds | `hit 2` or `hit 3` | Add a compact achievement reward. |
-| The player has been inactive for a while | An occasional `hit 1` | Give a gentle, playful reminder that the experience is waiting. |
-| An error or unexpected failure occurs while another task is running | `hit 2` or `hit 3` | Make the change in state physically noticeable. |
-| The main task is complete or a major goal is achieved | `hit 10` | Celebrate at the firmware's maximum level. |
+| 初次见面、任务刚启动或通信桥首次就绪 | `hit 1` | 建立轻松友好的首次触觉印象。 |
+| 开始新的子任务或到达有意义的进度节点 | `hit 1` 或 `hit 2` | 让玩家不只“看到”进度，也能“感到”进度。 |
+| 子任务完成、解谜成功或游戏行动成功 | `hit 2` 或 `hit 3` | 给予小而明确的成就奖励。 |
+| 玩家较长时间没有互动 | 偶尔 `hit 1` | 用轻柔、俏皮的方式提醒互动仍在等待。 |
+| 执行其他任务时发生错误、失败或意外事件 | `hit 2` 或 `hit 3` | 让状态变化更有存在感。 |
+| 主任务完成、击败首领或达成重大目标 | `hit 10` | 用最高等级的庆祝震动放大完成感。 |
 
-These are defaults, not a soundtrack for every line of text. Avoid vibrating after every sentence or routine update, so progress cues and celebrations retain their surprise-reward effect.
+不要在每一句话、每个 token 或普通状态更新后都震动。为触觉反馈留出节奏，下一次奖励或庆祝才会保有惊喜感。
 
-Use `HIT` for normal feedback:
+## 命令语义
+
+日常反馈优先使用 `HIT`：
 
 ```bash
 python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py hit 1
 ```
 
-The bridge answers `QUEUED HIT 1` immediately. It does not wait for the ESP32 hold period or fade. That lets an AI agent send a haptic cue in the middle of a response and continue the scene naturally.
+`HIT` 的参数是固件中的“伤害值”，不是直接的目标强度。每一个四舍五入后的伤害单位会让当前等级增加 10，并钳制在 `0` 到 `100`：
 
-The ESP32 firmware interprets `HIT` as additive **damage**, not direct intensity. Each rounded damage unit adds 10 to the current level, up to 100. From rest, `HIT 1`, `HIT 3`, and `HIT 5` lead to levels 10, 30, and 50 respectively; `HIT 10` and `HIT 50` both clamp to 100. Perceived output depends on the physical device, so a number is not a guarantee of how prominent the vibration feels.
+| 命令 | 从等级 0 开始时的结果 |
+| --- | --- |
+| `HIT 1` | 等级 10 |
+| `HIT 3` | 等级 30 |
+| `HIT 5` | 等级 50 |
+| `HIT 10` | 等级 100 |
+| `HIT 50` | 仍为等级 100，因为固件会钳制上限 |
 
-Use `SET <0-100>` only for the uncommon case where a scene needs an exact baseline level:
+`HIT` 会累加当前等级。固件在收到 `HIT` 或 `SET` 后保持约 7 秒，然后每 50 毫秒将等级降低 1，直到归零。因此不需要在普通反馈后发送 `SET 0` 或 `STOP`，AI 可以发出震动后自然继续任务。
+
+`SET <0-100>` 用于少数需要精确指定基准等级的场景，不是日常 `HIT` 的替代品：
 
 ```bash
 python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py set 45
 ```
 
-Do not habitually send `STOP` or `SET 0` after a `HIT`. The ESP32 holds its current level for about seven seconds and then fades it down automatically. Send `STOP` only when a player requests it, a supervising system needs an immediate halt, or the scene must end instantly:
+`STOP` 只用于玩家明确要求立即停止，或必须立刻结束某段体验的情形：
 
 ```bash
 python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py stop
 ```
 
-## Troubleshooting
+完整协议见 [protocol.md](.agents/skills/immersive-vibration-response/references/protocol.md)。
 
-- `ERR serial: pyserial is required`: activate the environment and install `requirements.txt`.
-- `ERR serial: ... permission denied`: check the Linux serial group or run the bridge with an account allowed to access the specified port.
-- `STATUS` shows `connected=0`: confirm the vibration device is powered, paired as `GK36`, and in Bluetooth range; run `scan` to request a new scan.
-- `connection refused`: start `esp32_bridge.py` and keep it running in a separate terminal.
-- `QUEUED HIT ...` means the bridge accepted the action. Check bridge logs and `status` if the physical device does not react.
+## 排查问题
 
-## Repository Layout
+- 出现 `ERR serial: pyserial is required`：激活虚拟环境并重新执行 `python3 -m pip install -r requirements.txt`。
+- 出现串口权限错误：检查 Debian / Ubuntu 的 `dialout` 用户组设置，或确认 Windows 设备管理器中的串口号。
+- `STATUS` 中 `connected=0`：检查震动设备是否已供电、是否可被发现为 `GK36`、是否在蓝牙范围内；可尝试运行 `scan`。
+- 出现连接被拒绝：确认 `esp32_bridge.py` 正在另一个终端中运行。
+- 收到 `QUEUED HIT ...`：表示通信桥已接收命令；如设备没有反应，请查看桥接终端日志和 `status` 输出。
 
-```text
-.agents/skills/immersive-vibration-response/
-  SKILL.md                 Codex workflow and autonomous trigger guidance
-  scripts/esp32_bridge.py Local asynchronous TCP-to-serial bridge
-  scripts/vibration_client.py Command client for agents and manual checks
-  references/protocol.md   ESP32 command semantics and decay model
-requirements.txt           Python dependency for serial communication
-```
+## 开源协议
+
+本项目采用 [MIT License](LICENSE)。
