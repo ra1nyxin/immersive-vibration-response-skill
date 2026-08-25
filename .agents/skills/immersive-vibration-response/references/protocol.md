@@ -28,6 +28,8 @@ The ESP32 firmware accepts ASCII lines over USB serial. The local TCP bridge acc
 | `HIT 10` | 100 |
 | `HIT 50` | 100, due to clamping |
 
+The supplied firmware normalizes zero, negative, and sub-unit damage to at least 1 damage unit. `HIT 0` is therefore a level-10 hit, not a stop command. Use `STOP` for an immediate level of 0.
+
 The physical output remains device-dependent. A numerical level is not a promise of a particular perceived intensity.
 
 ## TCP Bridge Behavior

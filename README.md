@@ -47,12 +47,15 @@ flowchart TD
 ## 准备事项
 
 - 一台运行 Codex 和通信桥的电脑。
-- 一块已刷入兼容固件的 ESP32-S3。
+- 一块带 USB Serial/JTAG 的 ESP32-S3 开发板，默认固件配置要求 16 MB Flash。
 - 一根可传输数据的 USB 线，用于连接电脑和 ESP32-S3。
 - 与该 ESP32 固件配套的低功率震动按摩设备。
 - Python 3.10 或更高版本。
+- ESP-IDF 5.5 或相近版本，用于首次构建和烧录 ESP32-S3 固件。
 
 当前配套固件会寻找名称为 `GK36` 的 BLE 设备，并使用服务 `0x1000` 与写特征 `0x1001`。请确认设备已供电、可被发现并处于 ESP32 的蓝牙范围内。
+
+本仓库已包含可直接构建的 ESP-IDF 固件项目，项目根目录为 `firmware/`。其默认 Flash 配置为 DIO、80 MHz、16 MB；请使用与该配置匹配的开发板。
 
 该项目只适用于这里描述的低功率设备与协议。不要将通信桥命令用于未知设备或高功率设备。
 
@@ -63,6 +66,33 @@ flowchart TD
 ```text
 .agents/skills/immersive-vibration-response/
 ```
+
+### 构建与烧录 ESP32-S3 固件
+
+首次使用时，先初始化 ESP-IDF 环境，然后在本仓库的 `firmware/` 目录中构建。不要在 `firmware/` 下额外寻找嵌套项目目录，它本身就是 ESP-IDF 项目根目录：
+
+```bash
+cd firmware
+idf.py set-target esp32s3
+idf.py build
+```
+
+烧录和查看串口输出时，将端口替换为实际 ESP32-S3 端口：
+
+```bash
+idf.py -p /dev/ttyACM0 flash monitor
+```
+
+Windows 示例：
+
+```powershell
+cd firmware
+idf.py set-target esp32s3
+idf.py build
+idf.py -p COM3 flash monitor
+```
+
+固件启动后会输出 `GALAKU ESP32S3 bridge boot`，随后开始扫描 `GK36`。使用 `Ctrl+]` 退出 ESP-IDF 串口监视器，再启动下文的 Python 通信桥。
 
 ### Debian / Ubuntu
 
@@ -150,6 +180,8 @@ python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py 
 | `HIT 50` | 仍为等级 100，因为固件会钳制上限 |
 
 `HIT` 会累加当前等级。固件在收到 `HIT` 或 `SET` 后保持约 7 秒，然后每 50 毫秒将等级降低 1，直到归零。因此不需要在普通反馈后发送 `SET 0` 或 `STOP`，AI 可以发出震动后自然继续任务。
+
+当前固件会把 `HIT 0`、负数或小于 1 的伤害值按至少 1 点伤害处理，因此它们仍会产生等级 10 的反馈。不要用 `HIT 0` 作为停止或静音命令；需要立即归零时使用 `STOP`。
 
 `SET <0-100>` 用于少数需要精确指定基准等级的场景，不是日常 `HIT` 的替代品：
 
