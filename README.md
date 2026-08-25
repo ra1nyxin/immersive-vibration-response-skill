@@ -9,7 +9,7 @@
 ## 工作原理
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph I[玩家与 AI 互动层]
         P[玩家的对话、操作与停留状态]
         G[游戏事件、任务状态与环境变化]
