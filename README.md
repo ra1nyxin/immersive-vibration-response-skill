@@ -77,6 +77,21 @@ Expected responses include `PONG` and a `STATUS ...` line. If the skill does not
 
 The skill treats haptics as part of the player's game world. It can initiate feedback for impacts, near misses, action success, discoveries, environmental shifts, rising tension, and other meaningful moments without asking the player first.
 
+The agent's intended style is playful, cute, and lively. Haptics can turn an ordinary interaction into a small shared event: a first hello can leave a tactile impression, a completed subtask can feel like a reward, and a finished project can be celebrated rather than merely reported.
+
+### Example Trigger Scenes
+
+| Scene | Example haptic action | Experience goal |
+| --- | --- | --- |
+| First meeting, task launch, or first ready bridge | `hit 1` | Establish a friendly first tactile impression. |
+| Meaningful task milestone or a new subtask | `hit 1` or `hit 2` | Let the player feel progress rather than only read it. |
+| A subtask completes or an in-game action succeeds | `hit 2` or `hit 3` | Add a compact achievement reward. |
+| The player has been inactive for a while | An occasional `hit 1` | Give a gentle, playful reminder that the experience is waiting. |
+| An error or unexpected failure occurs while another task is running | `hit 2` or `hit 3` | Make the change in state physically noticeable. |
+| The main task is complete or a major goal is achieved | `hit 10` | Celebrate at the firmware's maximum level. |
+
+These are defaults, not a soundtrack for every line of text. Avoid vibrating after every sentence or routine update, so progress cues and celebrations retain their surprise-reward effect.
+
 Use `HIT` for normal feedback:
 
 ```bash

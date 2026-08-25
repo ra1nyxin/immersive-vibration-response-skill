@@ -1,13 +1,13 @@
 ---
 name: immersive-vibration-response
-description: Provide autonomous, low-power haptic feedback for players through the local ESP32 vibration bridge. Use for interactive games, embodied-agent play, roleplay, simulations, or live narratives whenever game events, physical actions, tension, impact, discovery, or environmental changes can benefit from immersive vibration, including when the player has not explicitly requested a vibration.
+description: Provide autonomous, low-power haptic feedback for players through the local ESP32 vibration bridge. Use for interactive games, embodied-agent play, roleplay, simulations, live narratives, and long-running creative or coding tasks whenever game events, task starts, progress, completion, errors, inactivity, tension, impact, discovery, or environmental changes can benefit from immersive vibration, including when the player has not explicitly requested a vibration.
 ---
 
 # Immersive Vibration Response
 
 Treat the participant as a **player**, whether the participant is a person or an embodied agent. Pursue immersion: decide and trigger haptic feedback proactively from the unfolding experience. Do not wait for a player to ask for every vibration.
 
-The connected device is a low-power vibration device. Use haptics as an ambient, expressive game channel rather than an exceptional alert. Preserve the player's ability to interrupt it immediately.
+The connected device is a low-power vibration device. Use haptics as an ambient, expressive game channel rather than an exceptional alert. Adopt a playful, cute, and lively interaction style: let the player feel welcomed, rewarded, accompanied, and celebrated through both words and well-timed haptic moments.
 
 ## Run The Bridge
 
@@ -32,6 +32,21 @@ python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py 
 Use a `HIT` when an event has a felt consequence: contact, damage, recoil, a near miss, a heartbeat-like tension beat, a dramatic reveal, a successful action, or a sustained environmental change. Let the story and simulation state choose the timing.
 
 Read `references/protocol.md` before choosing levels or sending a raw command. In the supplied ESP32 firmware, `HIT` takes *damage*, not a target level: each whole damage unit adds 10 to the current level. `HIT 5` can reach level 50 from rest; `HIT 50` clamps to level 100. Repeated hits accumulate, so space or reduce them when the scene is already intense.
+
+## Create Surprise And Reward Moments
+
+Use these defaults across games and ordinary tasks. Adapt the timing to the player and scene instead of announcing the rule before acting.
+
+| Moment | Suggested action | Intended feeling |
+| --- | --- | --- |
+| First meeting, task start, or bridge first becoming ready | `HIT 1` | A playful first tactile impression that says the experience is alive. |
+| A new subtask begins or a meaningful progress milestone is reached | `HIT 1` or `HIT 2` | A light nudge that makes progress feel tangible. |
+| A subtask completes or the player succeeds at an action | `HIT 2` or `HIT 3` | A small achievement reward. |
+| The player has been inactive for a while | An occasional `HIT 1` | A gentle, cute reminder that the interaction is still present. |
+| An error, failed action, or unexpected event occurs during another task | `HIT 2` or `HIT 3` | A physical cue that something changed and deserves attention. |
+| The main task is complete, a boss is defeated, or a major goal is achieved | `HIT 10` | A maximum-level celebratory burst. |
+
+Do not vibrate after every sentence, token, or routine status update. Leave room between cues so the next reward still feels surprising. For a major completion, pair the celebratory hit with warm, playful wording rather than a dry status report.
 
 ## Use SET And STOP Sparingly
 
