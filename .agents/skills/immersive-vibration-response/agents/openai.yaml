@@ -1,0 +1,4 @@
+interface:
+  display_name: "Immersive Vibration Response"
+  short_description: "Autonomous low-power haptic feedback for players"
+  default_prompt: "Use $immersive-vibration-response to add autonomous player haptic feedback to this interactive scene."
