@@ -113,12 +113,23 @@ class SerialTransport:
             dsrdtr=False,
             rtscts=False,
         )
-        self.serial.dtr = False
-        self.serial.rts = False
         time.sleep(3)
-        self.serial.reset_input_buffer()
-        self.serial.reset_output_buffer()
+        self._prepare_open_port()
         logging.info("serial opened on %s at %d baud", self.port, self.baud)
+
+    def _prepare_open_port(self) -> None:
+        """Apply optional serial setup without rejecting USB drivers that lack modem control."""
+        assert self.serial is not None
+        for attribute in ("dtr", "rts"):
+            try:
+                setattr(self.serial, attribute, False)
+            except (OSError, ValueError) as exc:
+                logging.debug("serial port does not support setting %s: %s", attribute.upper(), exc)
+        for method_name in ("reset_input_buffer", "reset_output_buffer"):
+            try:
+                getattr(self.serial, method_name)()
+            except (OSError, ValueError) as exc:
+                logging.debug("serial port does not support %s: %s", method_name, exc)
 
     def close(self) -> None:
         if self.serial is not None:
@@ -249,7 +260,11 @@ async def serve(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial-port", required=True, help="ESP32 USB serial port, such as /dev/ttyACM0 or COM3")
+    parser.add_argument(
+        "--serial-port",
+        required=True,
+        help="ESP32 USB serial port, such as /dev/ttyACM0, /dev/cu.usbmodem1101, or COM3",
+    )
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--listen-address", default=DEFAULT_HOST)
     parser.add_argument("--listen-port", type=int, default=DEFAULT_PORT)

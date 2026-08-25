@@ -92,6 +92,15 @@ idf.py build
 idf.py -p COM3 flash monitor
 ```
 
+macOS 示例：
+
+```bash
+cd firmware
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/cu.usbmodem1101 flash monitor
+```
+
 固件启动后会输出 `GALAKU ESP32S3 bridge boot`，随后开始扫描 `GK36`。使用 `Ctrl+]` 退出 ESP-IDF 串口监视器，再启动下文的 Python 通信桥。
 
 ### Debian / Ubuntu
@@ -116,6 +125,31 @@ sudo usermod -a -G dialout "$USER"
 python3 .agents/skills/immersive-vibration-response/scripts/esp32_bridge.py \
   --serial-port /dev/ttyACM0
 ```
+
+### macOS
+
+创建虚拟环境并安装依赖：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
+
+连接 ESP32-S3 后，优先使用 macOS 的 callout 串口 `/dev/cu.*`，而不是 `/dev/tty.*`。常见名称是 `/dev/cu.usbmodem*` 或 `/dev/cu.usbserial*`；可用下面命令寻找：
+
+```bash
+ls /dev/cu.usbmodem* /dev/cu.usbserial* 2>/dev/null
+```
+
+使用实际返回的端口启动桥，例如：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/esp32_bridge.py \
+  --serial-port /dev/cu.usbmodem1101
+```
+
+通信桥会尽力关闭 DTR/RTS 并清理串口缓冲区。少数 macOS USB 串口驱动不支持这些控制操作时，桥只会记录调试日志，不会因此拒绝连接。
 
 ### Windows
 
@@ -201,6 +235,7 @@ python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py 
 
 - 出现 `ERR serial: pyserial is required`：激活虚拟环境并重新执行 `python3 -m pip install -r requirements.txt`。
 - 出现串口权限错误：检查 Debian / Ubuntu 的 `dialout` 用户组设置，或确认 Windows 设备管理器中的串口号。
+- macOS 找不到端口：重新插拔 USB 线后执行 `ls /dev/cu.usbmodem* /dev/cu.usbserial* 2>/dev/null`；优先将返回的 `/dev/cu.*` 路径传给 `--serial-port`。
 - `STATUS` 中 `connected=0`：检查震动设备是否已供电、是否可被发现为 `GK36`、是否在蓝牙范围内；可尝试运行 `scan`。
 - 出现连接被拒绝：确认 `esp32_bridge.py` 正在另一个终端中运行。
 - 收到 `QUEUED HIT ...`：表示通信桥已接收命令；如设备没有反应，请查看桥接终端日志和 `status` 输出。

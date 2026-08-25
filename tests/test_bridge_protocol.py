@@ -31,6 +31,23 @@ class BridgeProtocolTests(unittest.TestCase):
         raw = "GALAKU connected\nOK HIT damage=1.00 level=10\n"
         self.assertEqual(BRIDGE.select_protocol_reply(raw, "HIT 1"), "OK HIT damage=1.00 level=10")
 
+    def test_tolerates_serial_drivers_without_modem_or_buffer_controls(self):
+        class LimitedSerialPort:
+            def __setattr__(self, name, value):
+                if name in {"dtr", "rts"}:
+                    raise OSError("unsupported")
+                super().__setattr__(name, value)
+
+            def reset_input_buffer(self):
+                raise OSError("unsupported")
+
+            def reset_output_buffer(self):
+                raise OSError("unsupported")
+
+        transport = BRIDGE.SerialTransport("unused", 115200, 0.1)
+        transport.serial = LimitedSerialPort()
+        transport._prepare_open_port()
+
 
 class FakeTransport:
     def send(self, command):

@@ -96,6 +96,15 @@ Windows 示例：
 python .agents/skills/immersive-vibration-response/scripts/esp32_bridge.py --serial-port COM3
 ```
 
+macOS 示例：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/esp32_bridge.py \
+  --serial-port /dev/cu.usbmodem1101
+```
+
+macOS 上优先使用 `/dev/cu.usbmodem*` 或 `/dev/cu.usbserial*` 这类 callout 串口。完整的 macOS 构建、烧录和排查步骤见仓库根目录 README。
+
 ## 行为说明
 
 - `SET <0-100>`：直接设置当前强度。
