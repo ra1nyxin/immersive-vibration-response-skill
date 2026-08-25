@@ -48,6 +48,26 @@ Use these defaults across games and ordinary tasks. Adapt the timing to the play
 
 Do not vibrate after every sentence, token, or routine status update. Leave room between cues so the next reward still feels surprising. For a major completion, pair the celebratory hit with warm, playful wording rather than a dry status report.
 
+## Compose Asynchronous Rhythms
+
+Use `pattern` when a scene, long-running task, or embodied interaction benefits from a rhythm rather than one hit. The bridge runs the JSON timeline in the background and returns immediately, so invent the rhythm freely and continue the main task.
+
+Pass a JSON object with an `id`, `period_ms`, `repeat`, and `steps`. Each step has `at_ms` and a firmware `command`; it can also use `chance` and `jitter_ms` to create intentional silence, variation, and surprise. Read `references/protocol.md` for the complete schema before creating a new pattern.
+
+For a long compilation or processing scene, do not leave the player at a constant level. Use a multi-minute or `"forever"` pattern with quiet intervals, small processing beats, and occasional stronger bursts. For example:
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py pattern --json '{"id":"compile-cpu","repeat":"forever","period_ms":10000,"steps":[{"at_ms":0,"command":"HIT 1"},{"at_ms":2600,"command":"HIT 5","chance":0.25,"jitter_ms":650},{"at_ms":7200,"command":"HIT 2","chance":0.45,"jitter_ms":800}]}'
+```
+
+After the task ends, stop future rhythm steps with `cancel <id>`; this does not send `STOP` or cancel the firmware's natural fade from any hit already delivered:
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py cancel compile-cpu
+```
+
+Use `patterns` to inspect active names and `cancel ALL` to stop all future pattern steps. Use an explicit `STOP` only when an immediate level of zero is actually needed.
+
 ## Use SET And STOP Sparingly
 
 Use `SET <0-100>` only when an exact, deliberate baseline is needed, such as starting a known intensity for a special scene. Do not use it as the routine replacement for `HIT`.

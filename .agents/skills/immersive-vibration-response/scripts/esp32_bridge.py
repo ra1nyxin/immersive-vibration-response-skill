@@ -6,18 +6,47 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass, field
+import json
 import logging
 import math
 import queue
+import random
+import re
 import signal
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 
 MAX_COMMAND_LENGTH = 64
+MAX_BRIDGE_COMMAND_LENGTH = 16_384
+MAX_PATTERN_STEPS = 128
+MAX_PATTERN_PERIOD_MS = 86_400_000
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 25363
+PATTERN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class PatternValidationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class PatternStep:
+    at_ms: int
+    command: str
+    chance: float
+    jitter_ms: int
+
+
+@dataclass(frozen=True)
+class PatternSpec:
+    pattern_id: str
+    repeat: Optional[int]
+    period_ms: int
+    start_delay_ms: int
+    steps: tuple[PatternStep, ...]
+    replace: bool
 
 
 def validate_command(line: str) -> tuple[bool, str]:
@@ -54,6 +83,85 @@ def validate_command(line: str) -> tuple[bool, str]:
             return False, "ERR SET level must be an integer"
         return True, f"SET {parts[1]}"
     return False, f"ERR unknown command: {parts[0]}"
+
+
+def _require_integer(value: Any, field_name: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise PatternValidationError(f"{field_name} must be an integer from {minimum} to {maximum}")
+    return value
+
+
+def parse_pattern_spec(payload: str) -> PatternSpec:
+    """Parse a bridge-local JSON timeline into safe firmware command steps."""
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise PatternValidationError(f"invalid pattern JSON: {exc.msg}") from exc
+    if not isinstance(data, dict):
+        raise PatternValidationError("pattern must be a JSON object")
+
+    pattern_id = data.get("id")
+    if not isinstance(pattern_id, str) or not PATTERN_ID.fullmatch(pattern_id):
+        raise PatternValidationError("id must use 1-64 letters, digits, dots, underscores, or hyphens")
+    period_ms = _require_integer(data.get("period_ms"), "period_ms", 1, MAX_PATTERN_PERIOD_MS)
+    start_delay_ms = _require_integer(data.get("start_delay_ms", 0), "start_delay_ms", 0, MAX_PATTERN_PERIOD_MS)
+    repeat_value = data.get("repeat", 1)
+    if repeat_value == "forever":
+        repeat: Optional[int] = None
+    else:
+        repeat = _require_integer(repeat_value, "repeat", 1, 100_000)
+    replace = data.get("replace", True)
+    if not isinstance(replace, bool):
+        raise PatternValidationError("replace must be true or false")
+
+    raw_steps = data.get("steps")
+    if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= MAX_PATTERN_STEPS:
+        raise PatternValidationError(f"steps must contain 1-{MAX_PATTERN_STEPS} entries")
+    steps: list[PatternStep] = []
+    for index, raw_step in enumerate(raw_steps):
+        if not isinstance(raw_step, dict):
+            raise PatternValidationError(f"steps[{index}] must be an object")
+        at_ms = _require_integer(raw_step.get("at_ms"), f"steps[{index}].at_ms", 0, period_ms - 1)
+        jitter_ms = _require_integer(raw_step.get("jitter_ms", 0), f"steps[{index}].jitter_ms", 0, period_ms)
+        chance = raw_step.get("chance", 1.0)
+        if isinstance(chance, bool) or not isinstance(chance, (int, float)) or not 0 <= chance <= 1:
+            raise PatternValidationError(f"steps[{index}].chance must be a number from 0 to 1")
+        command = raw_step.get("command")
+        if not isinstance(command, str):
+            raise PatternValidationError(f"steps[{index}].command must be a firmware command string")
+        valid, canonical_command = validate_command(command)
+        if not valid:
+            raise PatternValidationError(f"steps[{index}].command: {canonical_command}")
+        if canonical_command.split(maxsplit=1)[0] not in {"HIT", "SET", "STOP"}:
+            raise PatternValidationError(f"steps[{index}].command must be HIT, SET, or STOP")
+        steps.append(PatternStep(at_ms, canonical_command, float(chance), jitter_ms))
+
+    return PatternSpec(pattern_id, repeat, period_ms, start_delay_ms, tuple(steps), replace)
+
+
+def parse_bridge_command(line: str) -> tuple[str, Any]:
+    """Parse firmware commands plus bridge-local pattern commands."""
+    if not line:
+        raise PatternValidationError("empty command")
+    if len(line) > MAX_BRIDGE_COMMAND_LENGTH:
+        raise PatternValidationError(f"bridge command exceeds {MAX_BRIDGE_COMMAND_LENGTH} characters")
+    if not line.isascii():
+        raise PatternValidationError("bridge command must be ASCII")
+    if line == "PATTERNS":
+        return "patterns", None
+    if line == "CANCEL ALL":
+        return "cancel-all", None
+    if line.startswith("CANCEL "):
+        pattern_id = line[7:].strip()
+        if not PATTERN_ID.fullmatch(pattern_id):
+            raise PatternValidationError("cancel id must use 1-64 letters, digits, dots, underscores, or hyphens")
+        return "cancel", pattern_id
+    if line.startswith("PATTERN "):
+        return "pattern", parse_pattern_spec(line[8:].strip())
+    valid, command = validate_command(line)
+    if not valid:
+        raise PatternValidationError(command)
+    return "firmware", command
 
 
 def select_protocol_reply(raw_reply: str, command: str) -> str:
@@ -167,6 +275,7 @@ class VibrationBridge:
         self.transport = SerialTransport(serial_port, baud, reply_wait)
         self.jobs: queue.Queue[Optional[CommandJob]] = queue.Queue(maxsize=queue_size)
         self.worker = threading.Thread(target=self._run_worker, name="esp32-serial", daemon=True)
+        self.patterns: dict[str, asyncio.Task[None]] = {}
         self.closed = False
 
     def start(self) -> None:
@@ -186,6 +295,70 @@ class VibrationBridge:
             finally:
                 job.done.set()
 
+    def enqueue_firmware_command(self, command: str) -> bool:
+        try:
+            self.jobs.put_nowait(CommandJob(command))
+        except queue.Full:
+            return False
+        return True
+
+    def start_pattern(self, pattern: PatternSpec) -> None:
+        existing = self.patterns.get(pattern.pattern_id)
+        if existing is not None and not existing.done():
+            if not pattern.replace:
+                raise PatternValidationError(f"pattern already active: {pattern.pattern_id}")
+            existing.cancel()
+        task = asyncio.create_task(self._run_pattern(pattern), name=f"vibration-pattern:{pattern.pattern_id}")
+        self.patterns[pattern.pattern_id] = task
+        task.add_done_callback(lambda completed: self._finish_pattern(pattern.pattern_id, completed))
+
+    def _finish_pattern(self, pattern_id: str, task: asyncio.Task[None]) -> None:
+        if self.patterns.get(pattern_id) is task:
+            self.patterns.pop(pattern_id, None)
+        if task.cancelled():
+            logging.info("pattern cancelled: %s", pattern_id)
+            return
+        error = task.exception()
+        if error is not None:
+            logging.warning("pattern failed: %s: %s", pattern_id, error)
+        else:
+            logging.info("pattern complete: %s", pattern_id)
+
+    async def _run_pattern(self, pattern: PatternSpec) -> None:
+        if pattern.start_delay_ms:
+            await asyncio.sleep(pattern.start_delay_ms / 1000)
+        iteration = 0
+        while pattern.repeat is None or iteration < pattern.repeat:
+            started_at = time.monotonic()
+            timeline: list[tuple[int, PatternStep]] = []
+            for step in pattern.steps:
+                offset = step.at_ms + random.randint(-step.jitter_ms, step.jitter_ms)
+                timeline.append((max(0, min(pattern.period_ms - 1, offset)), step))
+            for offset_ms, step in sorted(timeline, key=lambda item: item[0]):
+                remaining = started_at + offset_ms / 1000 - time.monotonic()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                if random.random() <= step.chance and not self.enqueue_firmware_command(step.command):
+                    logging.warning("pattern step dropped because the serial queue is full: %s", pattern.pattern_id)
+            iteration += 1
+            remaining = started_at + pattern.period_ms / 1000 - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+
+    def cancel_pattern(self, pattern_id: str) -> bool:
+        task = self.patterns.get(pattern_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
+
+    def cancel_all_patterns(self) -> int:
+        active = [pattern_id for pattern_id in self.patterns if self.cancel_pattern(pattern_id)]
+        return len(active)
+
+    def active_pattern_ids(self) -> list[str]:
+        return sorted(pattern_id for pattern_id, task in self.patterns.items() if not task.done())
+
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         try:
@@ -195,24 +368,44 @@ class VibrationBridge:
                     break
                 try:
                     line = raw.decode("ascii").strip()
-                except UnicodeDecodeError:
-                    writer.write(b"ERR command must be ASCII\n")
+                    kind, payload = parse_bridge_command(line)
+                except (UnicodeDecodeError, PatternValidationError) as exc:
+                    writer.write((f"ERR {exc}\n").encode("ascii", errors="replace"))
                     await writer.drain()
                     continue
-                valid, result = validate_command(line)
-                if not valid:
-                    writer.write((result + "\n").encode("ascii"))
+                if kind == "pattern":
+                    try:
+                        self.start_pattern(payload)
+                    except PatternValidationError as exc:
+                        writer.write((f"ERR {exc}\n").encode("ascii"))
+                    else:
+                        writer.write((f"QUEUED PATTERN {payload.pattern_id}\n").encode("ascii"))
                     await writer.drain()
                     continue
-                job = CommandJob(result)
+                if kind == "patterns":
+                    response = json.dumps({"active": self.active_pattern_ids()}, separators=(",", ":"))
+                    writer.write((f"PATTERNS {response}\n").encode("ascii"))
+                    await writer.drain()
+                    continue
+                if kind == "cancel-all":
+                    writer.write((f"OK CANCEL ALL {self.cancel_all_patterns()}\n").encode("ascii"))
+                    await writer.drain()
+                    continue
+                if kind == "cancel":
+                    state = "OK" if self.cancel_pattern(payload) else "OK INACTIVE"
+                    writer.write((f"{state} CANCEL {payload}\n").encode("ascii"))
+                    await writer.drain()
+                    continue
+                command = payload
+                job = CommandJob(command)
                 try:
                     self.jobs.put_nowait(job)
                 except queue.Full:
                     writer.write(b"ERR bridge queue full\n")
                     await writer.drain()
                     continue
-                if result.startswith("HIT "):
-                    writer.write(("QUEUED " + result + "\n").encode("ascii"))
+                if command.startswith("HIT "):
+                    writer.write(("QUEUED " + command + "\n").encode("ascii"))
                     await writer.drain()
                     continue
                 await asyncio.to_thread(job.done.wait)
@@ -228,7 +421,11 @@ class VibrationBridge:
         if self.closed:
             return
         self.closed = True
-        self.jobs.put(None)
+        self.cancel_all_patterns()
+        try:
+            self.jobs.put_nowait(None)
+        except queue.Full:
+            logging.warning("serial queue remained full while closing the bridge")
         self.worker.join(timeout=2)
         self.transport.close()
 

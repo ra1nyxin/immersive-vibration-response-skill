@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import time
@@ -48,9 +49,37 @@ class BridgeProtocolTests(unittest.TestCase):
         transport.serial = LimitedSerialPort()
         transport._prepare_open_port()
 
+    def test_parses_a_flexible_pattern_timeline(self):
+        spec = BRIDGE.parse_pattern_spec(
+            json.dumps(
+                {
+                    "id": "compile-cpu",
+                    "repeat": "forever",
+                    "period_ms": 10_000,
+                    "steps": [
+                        {"at_ms": 0, "command": "HIT 1"},
+                        {"at_ms": 2_500, "command": "HIT 5", "chance": 0.25, "jitter_ms": 500},
+                    ],
+                }
+            )
+        )
+        self.assertEqual(spec.pattern_id, "compile-cpu")
+        self.assertIsNone(spec.repeat)
+        self.assertEqual(spec.steps[1].command, "HIT 5")
+
+    def test_rejects_diagnostic_commands_inside_a_pattern(self):
+        with self.assertRaisesRegex(BRIDGE.PatternValidationError, "must be HIT, SET, or STOP"):
+            BRIDGE.parse_pattern_spec(
+                '{"id":"invalid","period_ms":1000,"steps":[{"at_ms":0,"command":"PING"}]}'
+            )
+
 
 class FakeTransport:
+    def __init__(self):
+        self.commands = []
+
     def send(self, command):
+        self.commands.append(command)
         time.sleep(0.05)
         return "PONG" if command == "PING" else f"OK SENT {command}"
 
@@ -61,7 +90,8 @@ class FakeTransport:
 class AsyncBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.bridge = BRIDGE.VibrationBridge("unused", 115200, 0.1, 4)
-        self.bridge.transport = FakeTransport()
+        self.transport = FakeTransport()
+        self.bridge.transport = self.transport
         self.bridge.start()
         self.server = await asyncio.start_server(self.bridge.handle_client, "127.0.0.1", 0)
         self.port = self.server.sockets[0].getsockname()[1]
@@ -84,6 +114,25 @@ class AsyncBridgeTests(unittest.IsolatedAsyncioTestCase):
         writer.write(b"PING\n")
         await writer.drain()
         self.assertEqual((await reader.readline()).decode().strip(), "PONG")
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_pattern_returns_immediately_and_runs_on_the_background_queue(self):
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        payload = json.dumps(
+            {
+                "id": "test-rhythm",
+                "repeat": 1,
+                "period_ms": 100,
+                "steps": [{"at_ms": 0, "command": "HIT 1"}],
+            },
+            separators=(",", ":"),
+        )
+        writer.write(("PATTERN " + payload + "\n").encode())
+        await writer.drain()
+        self.assertEqual((await reader.readline()).decode().strip(), "QUEUED PATTERN test-rhythm")
+        await asyncio.sleep(0.12)
+        self.assertIn("HIT 1", self.transport.commands)
         writer.close()
         await writer.wait_closed()
 

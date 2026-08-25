@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import socket
+from pathlib import Path
 
 
 def build_command(args: argparse.Namespace) -> str:
@@ -14,6 +15,13 @@ def build_command(args: argparse.Namespace) -> str:
         return f"HIT {args.value}"
     if args.action == "set":
         return f"SET {args.value}"
+    if args.action == "pattern":
+        pattern_json = args.json if args.json is not None else Path(args.file).read_text(encoding="utf-8")
+        return "PATTERN " + pattern_json.strip()
+    if args.action == "cancel":
+        return "CANCEL " + args.pattern_id
+    if args.action == "patterns":
+        return "PATTERNS"
     raise ValueError(f"unsupported action: {args.action}")
 
 
@@ -42,6 +50,13 @@ def parse_args() -> argparse.Namespace:
     hit.add_argument("value", type=float)
     set_level = subparsers.add_parser("set", help="set a direct firmware level, rarely needed")
     set_level.add_argument("value", type=int)
+    pattern = subparsers.add_parser("pattern", help="queue an asynchronous JSON rhythm pattern")
+    pattern_source = pattern.add_mutually_exclusive_group(required=True)
+    pattern_source.add_argument("--json", help="pattern JSON object")
+    pattern_source.add_argument("--file", help="path to a UTF-8 pattern JSON file")
+    cancel = subparsers.add_parser("cancel", help="cancel one active pattern, or ALL")
+    cancel.add_argument("pattern_id")
+    subparsers.add_parser("patterns", help="list active asynchronous patterns")
     return parser.parse_args()
 
 

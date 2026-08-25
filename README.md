@@ -15,16 +15,21 @@ flowchart TD
     A -->|识别欢迎、进度、成功、错误或庆祝节点| S[沉浸式震动反馈 Skill]
     S -->|选择俏皮的触觉奖励时机| H[HIT damage]
     S -->|少数精确基准场景| T[SET level]
+    S -->|长时或变化节奏| PT[PATTERN JSON]
     S -->|玩家明确要求或立即结束| X[STOP]
     H --> C[命令客户端]
     T --> C
+    PT --> C
     X --> C
     C -->|换行分隔的本地 TCP 文本命令| B[异步通信桥\n127.0.0.1:25363]
     B --> V[命令校验\nASCII、长度不超过 64]
     V --> Q{命令类型}
     Q -->|HIT：立即回执| R[QUEUED HIT]
     R -->|AI 不等待震动结束，继续对话与任务| A
-    Q -->|所有合法命令| W[后台串口工作队列]
+    Q -->|PATTERN：启动后台调度| PS[节奏调度器\n按时间、概率和抖动安排步骤]
+    PS -->|QUEUED PATTERN 后继续任务| A
+    PS -->|逐步投入| W[后台串口工作队列]
+    Q -->|HIT、PING、STATUS、SCAN、SERVICES、SET、STOP| W
     W -->|PING、STATUS、SCAN、SERVICES、SET、STOP 的结果| K[返回串口状态回复]
     K --> C
     W -->|USB 串口| U[ESP32-S3 串口输入]
@@ -230,6 +235,80 @@ python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py 
 ```
 
 完整协议见 [protocol.md](.agents/skills/immersive-vibration-response/references/protocol.md)。
+
+## 异步编排震法
+
+除了单次 `hit`，通信桥还提供在本地后台运行的 `pattern` 编排。它不修改 ESP32 固件，而是在 Python bridge 中按时间表把步骤投入原有串口队列。AI 发出编排后会立即收到 `QUEUED PATTERN <id>`，随后继续对话、游戏或任务，不需要等待节奏结束。
+
+编排是 JSON 对象，字段如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `id` | 编排名称，只能使用英文、数字、点、下划线和连字符；同名编排默认会替换旧编排。 |
+| `period_ms` | 一轮节奏的时长，单位为毫秒。轮次中没有步骤的部分就是无震动区间。 |
+| `repeat` | 循环次数，或使用字符串 `"forever"` 持续运行至取消。 |
+| `start_delay_ms` | 可选，首次执行前等待的毫秒数。 |
+| `steps` | 时间点数组，每个步骤含 `at_ms`、`command`，并可选 `chance` 与 `jitter_ms`。 |
+| `at_ms` | 当前轮次开始后的执行时刻，单位为毫秒。 |
+| `command` | `HIT <damage>`、`SET <level>` 或 `STOP`。日常节奏优先使用 `HIT`。 |
+| `chance` | 可选，`0` 到 `1` 的执行概率；低于 1 会自然制造空拍和惊喜感。 |
+| `jitter_ms` | 可选，步骤前后随机偏移的最大毫秒数；避免节奏像机械时钟一样单调。 |
+
+### 长时“CPU 编译感”示例
+
+当 AI 说“要开始进行长时编译任务啦，让你也感受一下被编译的感觉吧嘻嘻！”时，可以启动一段长时、非恒定的节奏。每 10 秒一轮，中间保留安静区间，偶尔出现中高强度处理脉冲：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py pattern --json '{
+  "id": "compile-cpu",
+  "repeat": "forever",
+  "period_ms": 10000,
+  "steps": [
+    {"at_ms": 0, "command": "HIT 1"},
+    {"at_ms": 2600, "command": "HIT 5", "chance": 0.25, "jitter_ms": 650},
+    {"at_ms": 7200, "command": "HIT 2", "chance": 0.45, "jitter_ms": 800}
+  ]
+}'
+```
+
+完成编译后取消后续轮次。已送入 ESP32 的最后一次 `HIT` 仍按固件自己的自动渐弱逻辑结束：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py cancel compile-cpu
+```
+
+### 有限庆祝节奏示例
+
+为主任务大功告成编排一次短促但有变化的庆祝，而不是固定维持一个强度：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py pattern --json '{
+  "id": "mission-complete",
+  "repeat": 1,
+  "period_ms": 5000,
+  "steps": [
+    {"at_ms": 0, "command": "HIT 2"},
+    {"at_ms": 850, "command": "HIT 5"},
+    {"at_ms": 2400, "command": "HIT 3", "chance": 0.7, "jitter_ms": 250}
+  ]
+}'
+```
+
+对于较长或复杂的 JSON，更适合写入文件再发送：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py \
+  pattern --file patterns/tense-exploration.json
+```
+
+查看或取消全部运行中的编排：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py patterns
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py cancel ALL
+```
+
+AI 可以自由组合多个 `HIT`、`SET`、空白时间段、概率和抖动来塑造任何叙事节奏。长时体验尤其应让无强度、轻微和中高强度区间交替出现，而不是长时间固定在同一个等级。
 
 ## 排查问题
 
