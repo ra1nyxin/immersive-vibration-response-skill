@@ -15,7 +15,7 @@ flowchart TD
     A -->|识别欢迎、进度、成功、错误或庆祝节点| S[沉浸式震动反馈 Skill]
     S -->|选择俏皮的触觉奖励时机| H[HIT damage]
     S -->|少数精确基准场景| T[SET level]
-    S -->|长时或变化节奏| PT[PATTERN JSON]
+    S -->|长时或变化节奏| PT[PATTERN JSON / RECIPE]
     S -->|玩家明确要求或立即结束| X[STOP]
     H --> C[命令客户端]
     T --> C
@@ -26,8 +26,8 @@ flowchart TD
     V --> Q{命令类型}
     Q -->|HIT：立即回执| R[QUEUED HIT]
     R -->|AI 不等待震动结束，继续对话与任务| A
-    Q -->|PATTERN：启动后台调度| PS[节奏调度器\n按时间、概率和抖动安排步骤]
-    PS -->|QUEUED PATTERN 后继续任务| A
+    Q -->|PATTERN 或 RECIPE：启动后台调度| PS[节奏调度器\n按时间、概率和抖动安排步骤]
+    PS -->|QUEUED 后继续任务| A
     PS -->|逐步投入| W[后台串口工作队列]
     Q -->|HIT、PING、STATUS、SCAN、SERVICES、SET、STOP| W
     W -->|PING、STATUS、SCAN、SERVICES、SET、STOP 的结果| K[返回串口状态回复]
@@ -253,6 +253,40 @@ python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py 
 | `command` | `HIT <damage>`、`SET <level>` 或 `STOP`。日常节奏优先使用 `HIT`。 |
 | `chance` | 可选，`0` 到 `1` 的执行概率；低于 1 会自然制造空拍和惊喜感。 |
 | `jitter_ms` | 可选，步骤前后随机偏移的最大毫秒数；避免节奏像机械时钟一样单调。 |
+
+### 内置震法配方
+
+不想每次从 JSON 开始时，直接调用 bridge 内置配方。它们同样是异步的，调用后 AI 可以立即继续任务；配方名称对应的节奏只是一个有趣的起点，仍可随时覆盖参数或改用完全自由的 `pattern`。
+
+| 配方 | 适合的时刻 | 节奏特点 |
+| --- | --- | --- |
+| `heartbeat` | 紧张、靠近、等待结果或角色有生命感的瞬间 | 两个相邻的轻拍，默认循环 6 次。 |
+| `compile-cpu` | 长时编译、分析、推理或后台处理 | 10 秒循环，含安静区间和偶发的处理中高强度脉冲。 |
+| `exploration` | 探索、搜索、接近未知地点 | 稀疏、低概率的发现提示。 |
+| `damage-combo` | 连击、连续碰撞、逐步升级的错误 | 一次递增强度的短节奏。 |
+| `celebration` | 主任务完成、胜利或特别奖励 | 俏皮、递增强度的有限庆祝。 |
+| `ambient-wave` | 环境氛围、长时陪伴、平静但不死板的场景 | 长周期、概率化的轻微波动和长静默。 |
+
+列出可用配方：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py recipes
+```
+
+直接启动庆祝：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py recipe celebration
+```
+
+覆盖参数时，在配方名后传入 JSON。下例把心跳改为更慢、更强的无限循环，并用独立 ID 以便后续取消：
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py \
+  recipe heartbeat --overrides '{"id":"boss-heartbeat","repeat":"forever","period_ms":5000,"scale":2}'
+```
+
+可覆盖字段为 `id`、`repeat`、`period_ms`、`start_delay_ms`、`replace`、`steps` 和 `scale`。`scale` 会等比调整配方中每个 `HIT` 的伤害值；传入 `steps` 则可完全替换该配方的时间线。
 
 ### 长时“CPU 编译感”示例
 

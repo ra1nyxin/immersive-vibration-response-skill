@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 from dataclasses import dataclass, field
 import json
 import logging
@@ -47,6 +48,86 @@ class PatternSpec:
     start_delay_ms: int
     steps: tuple[PatternStep, ...]
     replace: bool
+
+
+RECIPE_LIBRARY: dict[str, dict[str, Any]] = {
+    "heartbeat": {
+        "description": "Two close light beats for tension, anticipation, or a living presence.",
+        "pattern": {
+            "id": "heartbeat",
+            "repeat": 6,
+            "period_ms": 3200,
+            "steps": [
+                {"at_ms": 0, "command": "HIT 1"},
+                {"at_ms": 430, "command": "HIT 1"},
+            ],
+        },
+    },
+    "compile-cpu": {
+        "description": "Long-running processing with quiet gaps and occasional stronger work pulses.",
+        "pattern": {
+            "id": "compile-cpu",
+            "repeat": "forever",
+            "period_ms": 10_000,
+            "steps": [
+                {"at_ms": 0, "command": "HIT 1"},
+                {"at_ms": 2600, "command": "HIT 5", "chance": 0.25, "jitter_ms": 650},
+                {"at_ms": 7200, "command": "HIT 2", "chance": 0.45, "jitter_ms": 800},
+            ],
+        },
+    },
+    "exploration": {
+        "description": "Sparse discovery cues for travel, searching, and nearby points of interest.",
+        "pattern": {
+            "id": "exploration",
+            "repeat": 8,
+            "period_ms": 6500,
+            "steps": [
+                {"at_ms": 500, "command": "HIT 1", "chance": 0.55, "jitter_ms": 500},
+                {"at_ms": 4000, "command": "HIT 2", "chance": 0.3, "jitter_ms": 700},
+            ],
+        },
+    },
+    "damage-combo": {
+        "description": "Escalating close-range hits for a combo, collision sequence, or escalating failure.",
+        "pattern": {
+            "id": "damage-combo",
+            "repeat": 1,
+            "period_ms": 2800,
+            "steps": [
+                {"at_ms": 0, "command": "HIT 1"},
+                {"at_ms": 420, "command": "HIT 2"},
+                {"at_ms": 1150, "command": "HIT 3"},
+            ],
+        },
+    },
+    "celebration": {
+        "description": "A playful escalating reward for a major completion or victory.",
+        "pattern": {
+            "id": "celebration",
+            "repeat": 1,
+            "period_ms": 5000,
+            "steps": [
+                {"at_ms": 0, "command": "HIT 2"},
+                {"at_ms": 850, "command": "HIT 5"},
+                {"at_ms": 2400, "command": "HIT 3", "chance": 0.7, "jitter_ms": 250},
+            ],
+        },
+    },
+    "ambient-wave": {
+        "description": "Slow, varied environmental pulses with long silent stretches.",
+        "pattern": {
+            "id": "ambient-wave",
+            "repeat": "forever",
+            "period_ms": 15_000,
+            "steps": [
+                {"at_ms": 1000, "command": "HIT 1", "chance": 0.7, "jitter_ms": 900},
+                {"at_ms": 6800, "command": "HIT 2", "chance": 0.4, "jitter_ms": 1200},
+                {"at_ms": 12000, "command": "HIT 1", "chance": 0.5, "jitter_ms": 1000},
+            ],
+        },
+    },
+}
 
 
 def validate_command(line: str) -> tuple[bool, str]:
@@ -139,6 +220,52 @@ def parse_pattern_spec(payload: str) -> PatternSpec:
     return PatternSpec(pattern_id, repeat, period_ms, start_delay_ms, tuple(steps), replace)
 
 
+def _scale_recipe_hits(pattern: dict[str, Any], scale: float) -> None:
+    steps = pattern.get("steps")
+    if not isinstance(steps, list):
+        return
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        command = step.get("command")
+        if not isinstance(command, str) or not command.startswith("HIT "):
+            continue
+        try:
+            damage = float(command.split(maxsplit=1)[1]) * scale
+        except (IndexError, ValueError) as exc:
+            raise PatternValidationError(f"steps[{index}].command has an invalid HIT damage value") from exc
+        if not math.isfinite(damage):
+            raise PatternValidationError(f"steps[{index}].command has an invalid HIT damage value")
+        step["command"] = f"HIT {damage:g}"
+
+
+def parse_recipe_spec(recipe_name: str, overrides_payload: str) -> PatternSpec:
+    """Resolve a named recipe, then validate its optional JSON overrides as a pattern."""
+    recipe = RECIPE_LIBRARY.get(recipe_name)
+    if recipe is None:
+        available = ", ".join(sorted(RECIPE_LIBRARY))
+        raise PatternValidationError(f"unknown recipe: {recipe_name}; available: {available}")
+    overrides: dict[str, Any] = {}
+    if overrides_payload:
+        try:
+            overrides = json.loads(overrides_payload)
+        except json.JSONDecodeError as exc:
+            raise PatternValidationError(f"invalid recipe override JSON: {exc.msg}") from exc
+        if not isinstance(overrides, dict):
+            raise PatternValidationError("recipe overrides must be a JSON object")
+    allowed = {"id", "repeat", "period_ms", "start_delay_ms", "replace", "steps", "scale"}
+    unknown = sorted(set(overrides) - allowed)
+    if unknown:
+        raise PatternValidationError(f"unknown recipe override fields: {', '.join(unknown)}")
+    scale = overrides.pop("scale", 1)
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or not 0 < scale <= 10:
+        raise PatternValidationError("scale must be a finite number greater than 0 and at most 10")
+    pattern = copy.deepcopy(recipe["pattern"])
+    pattern.update(overrides)
+    _scale_recipe_hits(pattern, float(scale))
+    return parse_pattern_spec(json.dumps(pattern, separators=(",", ":")))
+
+
 def parse_bridge_command(line: str) -> tuple[str, Any]:
     """Parse firmware commands plus bridge-local pattern commands."""
     if not line:
@@ -149,6 +276,8 @@ def parse_bridge_command(line: str) -> tuple[str, Any]:
         raise PatternValidationError("bridge command must be ASCII")
     if line == "PATTERNS":
         return "patterns", None
+    if line == "RECIPES":
+        return "recipes", None
     if line == "CANCEL ALL":
         return "cancel-all", None
     if line.startswith("CANCEL "):
@@ -158,6 +287,11 @@ def parse_bridge_command(line: str) -> tuple[str, Any]:
         return "cancel", pattern_id
     if line.startswith("PATTERN "):
         return "pattern", parse_pattern_spec(line[8:].strip())
+    if line.startswith("RECIPE "):
+        parts = line[7:].strip().split(maxsplit=1)
+        if not parts:
+            raise PatternValidationError("recipe requires a name")
+        return "recipe", parse_recipe_spec(parts[0], parts[1] if len(parts) == 2 else "")
     valid, command = validate_command(line)
     if not valid:
         raise PatternValidationError(command)
@@ -382,9 +516,26 @@ class VibrationBridge:
                         writer.write((f"QUEUED PATTERN {payload.pattern_id}\n").encode("ascii"))
                     await writer.drain()
                     continue
+                if kind == "recipe":
+                    try:
+                        self.start_pattern(payload)
+                    except PatternValidationError as exc:
+                        writer.write((f"ERR {exc}\n").encode("ascii"))
+                    else:
+                        writer.write((f"QUEUED RECIPE {payload.pattern_id}\n").encode("ascii"))
+                    await writer.drain()
+                    continue
                 if kind == "patterns":
                     response = json.dumps({"active": self.active_pattern_ids()}, separators=(",", ":"))
                     writer.write((f"PATTERNS {response}\n").encode("ascii"))
+                    await writer.drain()
+                    continue
+                if kind == "recipes":
+                    response = json.dumps(
+                        {name: recipe["description"] for name, recipe in sorted(RECIPE_LIBRARY.items())},
+                        separators=(",", ":"),
+                    )
+                    writer.write((f"RECIPES {response}\n").encode("ascii"))
                     await writer.drain()
                     continue
                 if kind == "cancel-all":

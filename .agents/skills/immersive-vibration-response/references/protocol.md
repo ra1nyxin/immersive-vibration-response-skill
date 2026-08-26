@@ -48,6 +48,8 @@ The bridge accepts these local commands in addition to the firmware protocol:
 | --- | --- |
 | `PATTERN <json>` | Starts a JSON timeline and immediately replies `QUEUED PATTERN <id>`. |
 | `PATTERNS` | Replies with the active pattern IDs. |
+| `RECIPE <name> [json]` | Starts a named recipe with optional JSON overrides and replies `QUEUED RECIPE <id>`. |
+| `RECIPES` | Replies with the built-in recipe names and descriptions. |
 | `CANCEL <id>` | Cancels future steps in one active pattern without sending `STOP`. |
 | `CANCEL ALL` | Cancels future steps in every active pattern without sending `STOP`. |
 
@@ -68,3 +70,13 @@ Pattern JSON fields:
 ```
 
 `id` uses 1-64 ASCII letters, digits, dots, underscores, or hyphens. `repeat` is a positive integer or `"forever"`. `period_ms` is 1 through 86,400,000. A pattern has 1 through 128 steps, each containing a `HIT`, `SET`, or `STOP` command at `at_ms` within its period. `chance` defaults to `1`; `jitter_ms` defaults to `0`. Reusing an ID replaces the old active pattern unless `replace` is `false`.
+
+## Built-In Recipes
+
+`heartbeat`, `compile-cpu`, `exploration`, `damage-combo`, `celebration`, and `ambient-wave` are built into the bridge. Resolve one with `RECIPE <name>` or with an override object:
+
+```text
+RECIPE heartbeat {"id":"boss-heartbeat","repeat":"forever","period_ms":5000,"scale":2}
+```
+
+Recipe overrides may contain `id`, `repeat`, `period_ms`, `start_delay_ms`, `replace`, `steps`, and `scale`. `steps` replaces the recipe timeline completely. `scale` is a finite number greater than 0 and no more than 10; it multiplies every `HIT` damage value in the final recipe. Named recipes remain ordinary patterns after resolution, so `PATTERNS`, `CANCEL <id>`, and `CANCEL ALL` work the same way.

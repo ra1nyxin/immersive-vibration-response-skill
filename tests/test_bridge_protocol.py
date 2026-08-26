@@ -73,6 +73,20 @@ class BridgeProtocolTests(unittest.TestCase):
                 '{"id":"invalid","period_ms":1000,"steps":[{"at_ms":0,"command":"PING"}]}'
             )
 
+    def test_recipe_overrides_support_identity_duration_and_damage_scaling(self):
+        spec = BRIDGE.parse_recipe_spec(
+            "heartbeat",
+            '{"id":"slow-heartbeat","repeat":2,"period_ms":5000,"scale":2}',
+        )
+        self.assertEqual(spec.pattern_id, "slow-heartbeat")
+        self.assertEqual(spec.repeat, 2)
+        self.assertEqual(spec.period_ms, 5000)
+        self.assertEqual(spec.steps[0].command, "HIT 2")
+
+    def test_rejects_unknown_recipe(self):
+        with self.assertRaisesRegex(BRIDGE.PatternValidationError, "unknown recipe"):
+            BRIDGE.parse_recipe_spec("does-not-exist", "")
+
 
 class FakeTransport:
     def __init__(self):
@@ -131,6 +145,16 @@ class AsyncBridgeTests(unittest.IsolatedAsyncioTestCase):
         writer.write(("PATTERN " + payload + "\n").encode())
         await writer.drain()
         self.assertEqual((await reader.readline()).decode().strip(), "QUEUED PATTERN test-rhythm")
+        await asyncio.sleep(0.12)
+        self.assertIn("HIT 1", self.transport.commands)
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_recipe_returns_immediately_and_runs_on_the_background_queue(self):
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        writer.write(b'RECIPE damage-combo {"id":"test-combo"}\n')
+        await writer.drain()
+        self.assertEqual((await reader.readline()).decode().strip(), "QUEUED RECIPE test-combo")
         await asyncio.sleep(0.12)
         self.assertIn("HIT 1", self.transport.commands)
         writer.close()

@@ -22,6 +22,11 @@ def build_command(args: argparse.Namespace) -> str:
         return "CANCEL " + args.pattern_id
     if args.action == "patterns":
         return "PATTERNS"
+    if args.action == "recipe":
+        overrides = args.overrides or ""
+        return "RECIPE " + args.recipe_name + (" " + overrides if overrides else "")
+    if args.action == "recipes":
+        return "RECIPES"
     raise ValueError(f"unsupported action: {args.action}")
 
 
@@ -57,6 +62,10 @@ def parse_args() -> argparse.Namespace:
     cancel = subparsers.add_parser("cancel", help="cancel one active pattern, or ALL")
     cancel.add_argument("pattern_id")
     subparsers.add_parser("patterns", help="list active asynchronous patterns")
+    recipe = subparsers.add_parser("recipe", help="queue a named rhythm recipe with optional JSON overrides")
+    recipe.add_argument("recipe_name")
+    recipe.add_argument("--overrides", help="JSON overrides for id, repeat, period_ms, steps, or scale")
+    subparsers.add_parser("recipes", help="list built-in rhythm recipes")
     return parser.parse_args()
 
 

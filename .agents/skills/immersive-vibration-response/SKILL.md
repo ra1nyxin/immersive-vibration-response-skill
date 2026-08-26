@@ -54,6 +54,14 @@ Use `pattern` when a scene, long-running task, or embodied interaction benefits 
 
 Pass a JSON object with an `id`, `period_ms`, `repeat`, and `steps`. Each step has `at_ms` and a firmware `command`; it can also use `chance` and `jitter_ms` to create intentional silence, variation, and surprise. Read `references/protocol.md` for the complete schema before creating a new pattern.
 
+Start with a built-in recipe when its emotional shape fits, then override it freely. Available recipes are `heartbeat`, `compile-cpu`, `exploration`, `damage-combo`, `celebration`, and `ambient-wave`:
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py recipe celebration
+```
+
+Use `--overrides` to set a new `id`, duration, repeat count, full replacement steps, or `scale` for all recipe hits. Read `references/protocol.md` for the exact override fields. Use a free `pattern` whenever the imagined rhythm is not covered by a recipe.
+
 For a long compilation or processing scene, do not leave the player at a constant level. Use a multi-minute or `"forever"` pattern with quiet intervals, small processing beats, and occasional stronger bursts. For example:
 
 ```bash
