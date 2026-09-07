@@ -27,6 +27,8 @@ flowchart TD
     Q -->|HIT：立即回执| R[QUEUED HIT]
     R -->|AI 不等待震动结束，继续对话与任务| A
     Q -->|PATTERN 或 RECIPE：启动后台调度| PS[节奏调度器\n按时间、概率和抖动安排步骤]
+    Q -->|BRIDGE_STATUS：读取本机状态| BS[串口端口、工作队列、活动编排与近期结果]
+    BS --> C
     PS -->|QUEUED 后继续任务| A
     PS -->|逐步投入| W[后台串口工作队列]
     Q -->|HIT、PING、STATUS、SCAN、SERVICES、SET、STOP| W
@@ -179,9 +181,18 @@ python .agents/skills/immersive-vibration-response/scripts/esp32_bridge.py --ser
 ```bash
 python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py ping
 python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py status
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py bridge-status
 ```
 
-预期会看到 `PONG` 和以 `STATUS` 开头的状态行。首次添加或修改 skill 后，如果 Codex 没有显示它，请重启 Codex。
+预期会看到 `PONG`、以 `STATUS` 开头的固件与 BLE 状态，以及以 `BRIDGE_STATUS` 开头的本机桥状态。首次添加或修改 skill 后，如果 Codex 没有显示它，请重启 Codex。
+
+`bridge-status` 不向 ESP32 发送命令，它会直接汇总通信桥运行时间、串口名称和波特率、串口是否打开、工作线程、正在处理的命令、排队命令数量、活动编排详情，以及最近 20 条已完成串口命令的真实结果。Agent 可以借此判断问题发生在本机桥、USB 串口、后台编排还是 ESP32/BLE，而不必只凭一次 `QUEUED` 推测。
+
+通信桥只会把属于当前命令且已经完整换行结束的固件回复返回给客户端。`GALAKU connected`、`FOUND_ADV ...` 和 ESP-IDF BLE 日志仍会保留为诊断上下文，但不会再被误认为 `PONG` 或 `STATUS`。若等待超时，响应会明确指出期望的回复，并附带最近四条串口输出，例如：
+
+```text
+ERR timeout waiting for PONG; serial=GALAKU connected | FOUND_ADV GK36
+```
 
 ## 主动触发与俏皮互动
 
@@ -387,6 +398,7 @@ AI 可以自由组合多个 `HIT`、`SET`、空白时间段、概率和抖动来
 - `STATUS` 中 `connected=0`：检查震动设备是否已供电、是否可被发现为 `GK36`、是否在蓝牙范围内；可尝试运行 `scan`。
 - 出现连接被拒绝：确认 `esp32_bridge.py` 正在另一个终端中运行。
 - 收到 `QUEUED HIT ...`：表示通信桥已接收命令；如设备没有反应，请查看桥接终端日志和 `status` 输出。
+- 收到 `ERR timeout waiting for ...`：ESP32 没有在等待时间内返回当前命令的完整终止行；查看响应后的 `serial=...` 上下文，并运行 `bridge-status` 检查串口任务和近期结果。
 
 ## 开源协议
 

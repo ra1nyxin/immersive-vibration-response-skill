@@ -38,7 +38,24 @@ The bridge listens on `127.0.0.1:25363` by default and accepts one newline-termi
 
 - `HIT` receives `QUEUED HIT <damage>` as soon as it enters the bridge queue. The ESP32 write happens later, so clients can continue without waiting for the hold or fade cycle.
 - Other commands wait for the serial reply so health and diagnostic commands remain useful.
+- Firmware replies are matched only after a complete newline-terminated response for the current command arrives. Unsolicited startup, BLE, advertising, and connection logs are retained as diagnostic context but do not masquerade as command results.
+- A reply timeout returns `ERR timeout waiting for ...` and includes up to four recent serial lines when available.
 - Firmware commands must be at most 64 ASCII characters. Bridge-local pattern commands can carry up to 16,384 ASCII characters. The bridge does not expose its control port outside the local machine by default.
+
+## Bridge Status
+
+`BRIDGE_STATUS` is handled locally and does not send a firmware command. It reports enough state for an agent to distinguish bridge, serial, worker queue, and pattern issues:
+
+```text
+BRIDGE_STATUS {"uptime_ms":12000,"serial":{"port":"/dev/ttyACM0","baud":115200,"open":true},"worker":{"alive":true,"in_flight":null,"queue_depth":0,"queue_capacity":64},"patterns":[],"recent_serial":[{"command":"STATUS","reply":"STATUS ble=1 ...","ok":true,"age_ms":250}]}
+```
+
+- `serial` identifies the configured port and baud rate and whether pyserial currently has the port open.
+- `worker` shows whether the serial thread is alive, which command it is processing, and how many commands remain queued.
+- `patterns` describes each active rhythm, including timing fields, step count, completed iterations, and remaining iterations.
+- `recent_serial` contains up to 20 newest completed firmware commands, replies, success flags, and result ages. This is where an agent can later inspect the eventual result of an asynchronous `HIT`.
+
+Run it through the client with `vibration_client.py bridge-status`. It complements firmware `STATUS`: `BRIDGE_STATUS` describes the local Python process and USB work, while `STATUS` describes ESP32 and BLE state.
 
 ## Asynchronous Patterns
 
@@ -46,6 +63,7 @@ The bridge accepts these local commands in addition to the firmware protocol:
 
 | Command | Behavior |
 | --- | --- |
+| `BRIDGE_STATUS` | Reports local serial, worker queue, active pattern, and recent command state without accessing the ESP32. |
 | `PATTERN <json>` | Starts a JSON timeline and immediately replies `QUEUED PATTERN <id>`. |
 | `PATTERNS` | Replies with the active pattern IDs. |
 | `RECIPE <name> [json]` | Starts a named recipe with optional JSON overrides and replies `QUEUED RECIPE <id>`. |

@@ -43,6 +43,14 @@ Read [references/interaction-style.md](references/interaction-style.md) for the 
 
 3. If the bridge or ESP32 is unavailable, continue the interaction without claiming a physical vibration occurred. Retry later at a natural transition.
 
+Use `bridge-status` when diagnosing the connection, inspecting background rhythm tasks, or checking the eventual serial result of earlier asynchronous hits:
+
+```bash
+python3 .agents/skills/immersive-vibration-response/scripts/vibration_client.py bridge-status
+```
+
+Read its `serial`, `worker`, `patterns`, and `recent_serial` fields before deciding whether a problem is the local bridge, the USB serial link, a queued task, or the ESP32/BLE state. Do not poll after every ordinary `HIT`; inspect it at a natural checkpoint or when behavior is unclear.
+
 ## Trigger Feedback Proactively
 
 Use `HIT` for ordinary moment-to-moment feedback. The command is asynchronous: the client receives `QUEUED` as soon as the bridge accepts it, then continue the conversation or game work without waiting for the vibration to finish.

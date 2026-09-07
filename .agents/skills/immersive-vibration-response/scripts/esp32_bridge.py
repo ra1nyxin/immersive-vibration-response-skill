@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
 import copy
 from dataclasses import dataclass, field
 import json
@@ -274,6 +275,8 @@ def parse_bridge_command(line: str) -> tuple[str, Any]:
         raise PatternValidationError(f"bridge command exceeds {MAX_BRIDGE_COMMAND_LENGTH} characters")
     if not line.isascii():
         raise PatternValidationError("bridge command must be ASCII")
+    if line == "BRIDGE_STATUS":
+        return "bridge-status", None
     if line == "PATTERNS":
         return "patterns", None
     if line == "RECIPES":
@@ -298,25 +301,53 @@ def parse_bridge_command(line: str) -> tuple[str, Any]:
     return "firmware", command
 
 
-def select_protocol_reply(raw_reply: str, command: str) -> str:
-    """Return the response line most relevant to a firmware command."""
-    lines = [line.strip() for line in raw_reply.splitlines() if line.strip()]
-    if not lines:
-        return ""
+def expected_reply_prefixes(command: str) -> tuple[str, ...]:
+    """Return terminal firmware response prefixes for one command."""
     verb = command.split(maxsplit=1)[0]
-    expected = {
-        "PING": "PONG",
-        "STATUS": "STATUS",
-        "SCAN": "OK SCAN",
-        "SERVICES": "OK SERVICES",
-        "SET": "OK SET",
-        "HIT": "OK HIT",
-        "STOP": "OK STOP",
-    }.get(verb, "")
+    return {
+        "PING": ("PONG",),
+        "STATUS": ("STATUS ",),
+        "SCAN": ("OK SCAN",),
+        "SERVICES": ("OK SERVICES", "SERVICES failed"),
+        "SET": ("OK SET",),
+        "HIT": ("OK HIT",),
+        "STOP": ("OK STOP",),
+    }.get(verb, ())
+
+
+def complete_serial_lines(raw_reply: str) -> list[str]:
+    """Return only newline-terminated serial lines, excluding partial reads."""
+    return [
+        line.strip()
+        for line in raw_reply.splitlines(keepends=True)
+        if line.endswith(("\n", "\r")) and line.strip()
+    ]
+
+
+def select_protocol_reply(raw_reply: str, command: str) -> str:
+    """Return only a complete terminal response belonging to the command."""
+    expected = expected_reply_prefixes(command)
+    if not expected:
+        return ""
+    lines = complete_serial_lines(raw_reply)
     for line in reversed(lines):
-        if line.startswith(expected) or line.startswith("ERR"):
+        if line == "ERR" or line.startswith("ERR ") or line.startswith(expected):
             return line
-    return lines[-1]
+    return ""
+
+
+def summarize_serial_context(raw_reply: str, limit: int = 240) -> str:
+    """Keep recent unsolicited output useful without flooding a TCP response."""
+    lines = [line.strip() for line in raw_reply.splitlines() if line.strip()]
+    summary = " | ".join(lines[-4:])
+    if len(summary) > limit:
+        summary = "..." + summary[-(limit - 3) :]
+    return summary
+
+
+def protocol_reply_succeeded(reply: str) -> bool:
+    """Classify known firmware and bridge-side failure responses."""
+    return bool(reply) and not reply.startswith(("ERR", "SERVICES failed"))
 
 
 @dataclass
@@ -324,6 +355,21 @@ class CommandJob:
     command: str
     done: threading.Event = field(default_factory=threading.Event)
     reply: str = ""
+
+
+@dataclass(frozen=True)
+class SerialEvent:
+    command: str
+    reply: str
+    completed_at: float
+
+
+@dataclass
+class PatternRuntime:
+    spec: PatternSpec
+    task: asyncio.Task[None]
+    started_at: float
+    completed_iterations: int = 0
 
 
 class SerialTransport:
@@ -380,6 +426,9 @@ class SerialTransport:
             finally:
                 self.serial = None
 
+    def is_open(self) -> bool:
+        return self.serial is not None and bool(getattr(self.serial, "is_open", False))
+
     def send(self, command: str) -> str:
         try:
             self.open()
@@ -401,7 +450,10 @@ class SerialTransport:
                 if reply:
                     return reply
             time.sleep(0.02)
-        return "OK SENT " + command
+        expected = " or ".join(expected_reply_prefixes(command))
+        context = summarize_serial_context("".join(chunks))
+        detail = f"; serial={context}" if context else "; no serial output"
+        return f"ERR timeout waiting for {expected}{detail}"
 
 
 class VibrationBridge:
@@ -409,7 +461,11 @@ class VibrationBridge:
         self.transport = SerialTransport(serial_port, baud, reply_wait)
         self.jobs: queue.Queue[Optional[CommandJob]] = queue.Queue(maxsize=queue_size)
         self.worker = threading.Thread(target=self._run_worker, name="esp32-serial", daemon=True)
-        self.patterns: dict[str, asyncio.Task[None]] = {}
+        self.patterns: dict[str, PatternRuntime] = {}
+        self.started_at = time.monotonic()
+        self.state_lock = threading.Lock()
+        self.in_flight_command: Optional[str] = None
+        self.serial_events: deque[SerialEvent] = deque(maxlen=20)
         self.closed = False
 
     def start(self) -> None:
@@ -420,6 +476,8 @@ class VibrationBridge:
             job = self.jobs.get()
             if job is None:
                 return
+            with self.state_lock:
+                self.in_flight_command = job.command
             try:
                 job.reply = self.transport.send(job.command)
                 logging.info("serial <= %s | => %s", job.command, job.reply)
@@ -427,6 +485,9 @@ class VibrationBridge:
                 job.reply = f"ERR serial: {exc}"
                 logging.warning("serial command failed: %s", exc)
             finally:
+                with self.state_lock:
+                    self.serial_events.append(SerialEvent(job.command, job.reply, time.monotonic()))
+                    self.in_flight_command = None
                 job.done.set()
 
     def enqueue_firmware_command(self, command: str) -> bool:
@@ -438,16 +499,17 @@ class VibrationBridge:
 
     def start_pattern(self, pattern: PatternSpec) -> None:
         existing = self.patterns.get(pattern.pattern_id)
-        if existing is not None and not existing.done():
+        if existing is not None and not existing.task.done():
             if not pattern.replace:
                 raise PatternValidationError(f"pattern already active: {pattern.pattern_id}")
-            existing.cancel()
+            existing.task.cancel()
         task = asyncio.create_task(self._run_pattern(pattern), name=f"vibration-pattern:{pattern.pattern_id}")
-        self.patterns[pattern.pattern_id] = task
+        self.patterns[pattern.pattern_id] = PatternRuntime(pattern, task, time.monotonic())
         task.add_done_callback(lambda completed: self._finish_pattern(pattern.pattern_id, completed))
 
     def _finish_pattern(self, pattern_id: str, task: asyncio.Task[None]) -> None:
-        if self.patterns.get(pattern_id) is task:
+        runtime = self.patterns.get(pattern_id)
+        if runtime is not None and runtime.task is task:
             self.patterns.pop(pattern_id, None)
         if task.cancelled():
             logging.info("pattern cancelled: %s", pattern_id)
@@ -474,16 +536,19 @@ class VibrationBridge:
                     await asyncio.sleep(remaining)
                 if random.random() <= step.chance and not self.enqueue_firmware_command(step.command):
                     logging.warning("pattern step dropped because the serial queue is full: %s", pattern.pattern_id)
-            iteration += 1
             remaining = started_at + pattern.period_ms / 1000 - time.monotonic()
             if remaining > 0:
                 await asyncio.sleep(remaining)
+            iteration += 1
+            runtime = self.patterns.get(pattern.pattern_id)
+            if runtime is not None and runtime.task is asyncio.current_task():
+                runtime.completed_iterations = iteration
 
     def cancel_pattern(self, pattern_id: str) -> bool:
-        task = self.patterns.get(pattern_id)
-        if task is None or task.done():
+        runtime = self.patterns.get(pattern_id)
+        if runtime is None or runtime.task.done():
             return False
-        task.cancel()
+        runtime.task.cancel()
         return True
 
     def cancel_all_patterns(self) -> int:
@@ -491,7 +556,61 @@ class VibrationBridge:
         return len(active)
 
     def active_pattern_ids(self) -> list[str]:
-        return sorted(pattern_id for pattern_id, task in self.patterns.items() if not task.done())
+        return sorted(pattern_id for pattern_id, runtime in self.patterns.items() if not runtime.task.done())
+
+    def bridge_status(self) -> dict[str, Any]:
+        """Return local bridge, serial worker, pattern, and recent result state."""
+        now = time.monotonic()
+        with self.state_lock:
+            in_flight = self.in_flight_command
+            events = list(self.serial_events)
+        patterns = []
+        for pattern_id, runtime in sorted(self.patterns.items()):
+            if runtime.task.done():
+                continue
+            repeat: int | str = runtime.spec.repeat if runtime.spec.repeat is not None else "forever"
+            remaining = (
+                None
+                if runtime.spec.repeat is None
+                else max(0, runtime.spec.repeat - runtime.completed_iterations)
+            )
+            patterns.append(
+                {
+                    "id": pattern_id,
+                    "repeat": repeat,
+                    "completed_iterations": runtime.completed_iterations,
+                    "remaining_iterations": remaining,
+                    "period_ms": runtime.spec.period_ms,
+                    "start_delay_ms": runtime.spec.start_delay_ms,
+                    "steps": len(runtime.spec.steps),
+                    "age_ms": round((now - runtime.started_at) * 1000),
+                }
+            )
+        recent_serial = [
+            {
+                "command": event.command,
+                "reply": event.reply,
+                "ok": protocol_reply_succeeded(event.reply),
+                "age_ms": round((now - event.completed_at) * 1000),
+            }
+            for event in reversed(events)
+        ]
+        return {
+            "uptime_ms": round((now - self.started_at) * 1000),
+            "serial": {
+                "port": self.transport.port,
+                "baud": self.transport.baud,
+                "open": self.transport.is_open(),
+            },
+            "worker": {
+                "alive": self.worker.is_alive(),
+                "in_flight": in_flight,
+                "queue_depth": self.jobs.qsize(),
+                "queue_capacity": self.jobs.maxsize,
+            },
+            "patterns": patterns,
+            "recent_serial": recent_serial,
+        }
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
@@ -523,6 +642,11 @@ class VibrationBridge:
                         writer.write((f"ERR {exc}\n").encode("ascii"))
                     else:
                         writer.write((f"QUEUED RECIPE {payload.pattern_id}\n").encode("ascii"))
+                    await writer.drain()
+                    continue
+                if kind == "bridge-status":
+                    response = json.dumps(self.bridge_status(), separators=(",", ":"))
+                    writer.write((f"BRIDGE_STATUS {response}\n").encode("ascii"))
                     await writer.drain()
                     continue
                 if kind == "patterns":

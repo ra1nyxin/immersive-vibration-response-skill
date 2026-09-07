@@ -11,6 +11,8 @@ from pathlib import Path
 def build_command(args: argparse.Namespace) -> str:
     if args.action in {"ping", "status", "scan", "services", "stop"}:
         return args.action.upper()
+    if args.action == "bridge-status":
+        return "BRIDGE_STATUS"
     if args.action == "hit":
         return f"HIT {args.value}"
     if args.action == "set":
@@ -49,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=25363)
     parser.add_argument("--timeout", type=float, default=2.0)
     subparsers = parser.add_subparsers(dest="action", required=True)
-    for name in ("ping", "status", "scan", "services", "stop"):
+    for name in ("ping", "status", "scan", "services", "stop", "bridge-status"):
         subparsers.add_parser(name)
     hit = subparsers.add_parser("hit", help="queue additive firmware damage, usually 1 through 10")
     hit.add_argument("value", type=float)

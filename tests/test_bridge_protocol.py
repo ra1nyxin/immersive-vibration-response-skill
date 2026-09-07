@@ -32,6 +32,51 @@ class BridgeProtocolTests(unittest.TestCase):
         raw = "GALAKU connected\nOK HIT damage=1.00 level=10\n"
         self.assertEqual(BRIDGE.select_protocol_reply(raw, "HIT 1"), "OK HIT damage=1.00 level=10")
 
+    def test_reply_matching_ignores_unsolicited_and_partial_lines(self):
+        self.assertEqual(BRIDGE.select_protocol_reply("GALAKU connected\nFOUND_ADV GK36\n", "PING"), "")
+        self.assertEqual(BRIDGE.select_protocol_reply("GALAKU connected\nPO", "PING"), "")
+        self.assertEqual(BRIDGE.select_protocol_reply("GALAKU connected\nPONG", "PING"), "")
+        self.assertEqual(BRIDGE.select_protocol_reply("GALAKU connected\nPONG\n", "PING"), "PONG")
+
+    def test_services_failure_is_a_terminal_reply(self):
+        raw = "I (42) GALAKU: BLE connected handle=1\nSERVICES failed rc=7\n"
+        self.assertEqual(BRIDGE.select_protocol_reply(raw, "SERVICES"), "SERVICES failed rc=7")
+        self.assertFalse(BRIDGE.protocol_reply_succeeded("SERVICES failed rc=7"))
+        self.assertFalse(BRIDGE.protocol_reply_succeeded("ERR timeout waiting for PONG"))
+        self.assertTrue(BRIDGE.protocol_reply_succeeded("OK SERVICES"))
+
+    def test_serial_timeout_reports_expected_reply_and_recent_context(self):
+        class LoggingSerialPort:
+            is_open = True
+
+            def __init__(self):
+                self.buffer = bytearray(b"GALAKU connected\nFOUND_ADV GK36\n")
+
+            @property
+            def in_waiting(self):
+                return len(self.buffer)
+
+            def read(self, count):
+                data = bytes(self.buffer[:count])
+                del self.buffer[:count]
+                return data
+
+            def write(self, data):
+                return len(data)
+
+            def flush(self):
+                pass
+
+        transport = BRIDGE.SerialTransport("unused", 115200, 0.03)
+        transport.serial = LoggingSerialPort()
+        self.assertEqual(
+            transport.send("PING"),
+            "ERR timeout waiting for PONG; serial=GALAKU connected | FOUND_ADV GK36",
+        )
+
+    def test_parses_bridge_status_as_a_local_command(self):
+        self.assertEqual(BRIDGE.parse_bridge_command("BRIDGE_STATUS"), ("bridge-status", None))
+
     def test_tolerates_serial_drivers_without_modem_or_buffer_controls(self):
         class LimitedSerialPort:
             def __setattr__(self, name, value):
@@ -91,6 +136,8 @@ class BridgeProtocolTests(unittest.TestCase):
 class FakeTransport:
     def __init__(self):
         self.commands = []
+        self.port = "fake-serial"
+        self.baud = 115200
 
     def send(self, command):
         self.commands.append(command)
@@ -99,6 +146,9 @@ class FakeTransport:
 
     def close(self):
         pass
+
+    def is_open(self):
+        return True
 
 
 class AsyncBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -130,6 +180,48 @@ class AsyncBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await reader.readline()).decode().strip(), "PONG")
         writer.close()
         await writer.wait_closed()
+
+    async def test_bridge_status_reports_serial_worker_patterns_and_recent_results(self):
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        writer.write(b"PING\n")
+        await writer.drain()
+        self.assertEqual((await reader.readline()).decode().strip(), "PONG")
+
+        writer.write(b"HIT 2\n")
+        await writer.drain()
+        self.assertEqual((await reader.readline()).decode().strip(), "QUEUED HIT 2")
+        await asyncio.sleep(0.12)
+
+        payload = json.dumps(
+            {
+                "id": "status-rhythm",
+                "repeat": "forever",
+                "period_ms": 1000,
+                "steps": [{"at_ms": 900, "command": "HIT 1"}],
+            },
+            separators=(",", ":"),
+        )
+        writer.write(("PATTERN " + payload + "\n").encode())
+        await writer.drain()
+        self.assertEqual((await reader.readline()).decode().strip(), "QUEUED PATTERN status-rhythm")
+
+        writer.write(b"BRIDGE_STATUS\n")
+        await writer.drain()
+        response = (await reader.readline()).decode().strip()
+        self.assertTrue(response.startswith("BRIDGE_STATUS "))
+        status = json.loads(response.removeprefix("BRIDGE_STATUS "))
+        writer.close()
+        await writer.wait_closed()
+        self.assertEqual(status["serial"], {"port": "fake-serial", "baud": 115200, "open": True})
+        self.assertTrue(status["worker"]["alive"])
+        self.assertEqual(status["recent_serial"][0]["command"], "HIT 2")
+        self.assertEqual(status["recent_serial"][0]["reply"], "OK SENT HIT 2")
+        self.assertTrue(status["recent_serial"][0]["ok"])
+        self.assertEqual(status["recent_serial"][1]["command"], "PING")
+        self.assertEqual(status["recent_serial"][1]["reply"], "PONG")
+        self.assertEqual(status["patterns"][0]["id"], "status-rhythm")
+        self.assertEqual(status["patterns"][0]["repeat"], "forever")
+        self.assertIsNone(status["patterns"][0]["remaining_iterations"])
 
     async def test_pattern_returns_immediately_and_runs_on_the_background_queue(self):
         reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
